@@ -28,6 +28,8 @@ export type FieldState<Value, ErrorMessage = string> = {
 export type FormConfig<Values extends Record<string, unknown>, ErrorMessage = string> = {
   [N in keyof Values]: {
     initialValue: Values[N] | (() => Values[N]);
+    defaultValue?: Values[N];
+    optional?: boolean;
     strategy?: Strategy;
     debounceInterval?: number;
     equalityFn?: (valueBeforeValidate: Values[N], valueAfterValidate: Values[N]) => boolean;
@@ -205,8 +207,14 @@ export const useForm = <Values extends Record<string, unknown>, ErrorMessage = s
     const getStrategy = (name: Name) => config.current[name].strategy ?? "onSuccessOrBlur";
     const getValidate = (name: Name) => config.current[name].validate ?? noop;
 
+    const isOptional = (name: Name) => Boolean(config.current[name].optional);
     const isMounted = (name: Name) => mounteds.current[name];
     const isTalkative = (name: Name) => states.current[name].talkative;
+
+    const isDefaultValue = <N extends Name>(name: Name, value: Values[N]): boolean =>
+      Object.prototype.hasOwnProperty.call(config.current[name], "defaultValue")
+        ? value === config.current[name].defaultValue
+        : false;
 
     const setState = <N extends Name>(
       name: N,
@@ -262,15 +270,26 @@ export const useForm = <Values extends Record<string, unknown>, ErrorMessage = s
       callbacks.current[name].forEach((callback) => callback());
     };
 
-    const setTalkative = (name: Name, strategies?: Strategy[]): void => {
-      const strategy = getStrategy(name);
-
-      if (!strategies || strategies.some((value) => strategy === value)) {
+    const setTalkativeStatus = <N extends Name>(name: N, strategies?: Strategy[]): boolean => {
+      if (isOptional(name) && isDefaultValue(name, states.current[name].exposed.value)) {
         setState(name, (prevState) => ({
           ...prevState,
-          talkative: true,
+          talkative: false,
         }));
+      } else {
+        const strategy = getStrategy(name);
+
+        if (!strategies || strategies.some((item) => strategy === item)) {
+          setState(name, (prevState) => ({
+            ...prevState,
+            talkative: true,
+          }));
+
+          return true;
+        }
       }
+
+      return false;
     };
 
     const setValidating = (name: Name): void => {
@@ -321,7 +340,7 @@ export const useForm = <Values extends Record<string, unknown>, ErrorMessage = s
         const error = promiseOrError;
 
         if (error === undefined) {
-          setTalkative(name, ["onSuccess", "onSuccessOrBlur"]);
+          setTalkativeStatus(name, ["onSuccess", "onSuccessOrBlur"]);
         }
 
         setValidateResult(name, error);
@@ -344,7 +363,7 @@ export const useForm = <Values extends Record<string, unknown>, ErrorMessage = s
             return;
           }
           if (error === undefined) {
-            setTalkative(name, ["onSuccess", "onSuccessOrBlur"]);
+            setTalkativeStatus(name, ["onSuccess", "onSuccessOrBlur"]);
           }
 
           setValidateResult(name, error);
@@ -371,7 +390,7 @@ export const useForm = <Values extends Record<string, unknown>, ErrorMessage = s
       }));
 
       if (Boolean(options.validate)) {
-        setTalkative(name);
+        setTalkativeStatus(name);
       }
 
       void internalValidateField(name);
@@ -402,7 +421,7 @@ export const useForm = <Values extends Record<string, unknown>, ErrorMessage = s
         return Promise.resolve(undefined);
       }
 
-      setTalkative(name);
+      setTalkativeStatus(name);
       return Promise.resolve(internalValidateField(name));
     };
 
@@ -438,7 +457,7 @@ export const useForm = <Values extends Record<string, unknown>, ErrorMessage = s
           value,
         }));
 
-        setTalkative(name, ["onChange"]);
+        setTalkativeStatus(name, ["onChange"]);
         clearDebounceTimeout(name);
 
         if (formStatus.current === "untouched" || formStatus.current === "submitted") {
@@ -468,7 +487,7 @@ export const useForm = <Values extends Record<string, unknown>, ErrorMessage = s
 
       // Avoid validating an untouched / already valid field
       if (validity.tag !== "unknown" && !isTalkative(name)) {
-        setTalkative(name, ["onBlur", "onSuccessOrBlur"]);
+        setTalkativeStatus(name, ["onBlur", "onSuccessOrBlur"]);
         void internalValidateField(name);
       }
     };
@@ -533,9 +552,13 @@ export const useForm = <Values extends Record<string, unknown>, ErrorMessage = s
       const shouldFocusOnError = !options.avoidFocusOnError;
 
       names.forEach((name: Name, index) => {
-        setTalkative(name);
-        values[name] = getFieldState(name, { sanitize: true }).value;
-        results[index] = internalValidateField(name);
+        const talkative = setTalkativeStatus(name);
+        const result = internalValidateField(name);
+
+        if (talkative) {
+          values[name] = getFieldState(name, { sanitize: true }).value;
+          results[index] = result;
+        }
       });
 
       if (isSyncSubmission(results)) {
